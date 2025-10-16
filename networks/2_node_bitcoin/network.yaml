@@ -1,0 +1,35 @@
+caddy:
+  enabled: true
+fork_observer:
+  configQueryInterval: 20
+  enabled: true
+caddy:
+  enabled: true
+nodes:
+- name: miner
+  addnode:
+    - tank1
+    - tank2
+- name: tank1
+  addnode:
+    - miner
+    - tank2
+- name: tank2
+  addnode:
+    - miner
+    - tank1
+- name: transactor1
+  addnode:
+    - miner
+    - transactor2
+    - transactor3
+- name: transactor2
+  addnode:
+    - miner
+    - transactor1
+    - transactor3
+- name: transactor3
+  addnode:
+    - miner
+    - transactor1
+    - transactor2
