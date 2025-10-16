@@ -21,9 +21,9 @@ class TXFlood(Commander):
         parser.add_argument(
             "--interval",
             dest="interval",
-            default=500,
+            default=1,
             type=int,
-            help="Number of milliseconds between TX generation (default 500ms)",
+            help="Number of seconds between TX generation (default 1s)",
         )
 
     def orders(self, node):
@@ -31,7 +31,7 @@ class TXFlood(Commander):
         for address_type in ["legacy", "p2sh-segwit", "bech32", "bech32m"]:
             self.addrs.append(wallet.getnewaddress(address_type=address_type))
         while True:
-            sleep(self.options.interval / 1000)
+            sleep(self.options.interval)
             try:
                 bal = wallet.getbalance()
                 if bal < 1:
