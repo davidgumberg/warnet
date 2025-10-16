@@ -21,6 +21,15 @@ image:
   # Overrides the image tag whose default is the chart appVersion.
   tag: "29.0"
 
-defaultConfig: |
-  dns=1
+defaultConfig: 'rpcauth=forkobserver:1418183465eecbd407010cf60811c6a0$d4e5f0647a63429c218da1302d7f19fe627302aeb0a71a74de55346a25d8057c
+
+  rpcwhitelist=forkobserver:getchaintips,getblockheader,getblockhash,getblock,getnetworkinfo
+
+  rpcwhitelistdefault=0
+
   debug=rpc
+
+  debug=cmpctblock
+
+  debug=net
+  '

