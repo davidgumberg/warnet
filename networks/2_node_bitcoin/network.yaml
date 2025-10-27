@@ -8,16 +8,16 @@ caddy:
 nodes:
 - name: miner
   addnode:
-    - tank1
-    - tank2
-- name: tank1
+    - victim
+    - honest
+- name: victim
   addnode:
     - miner
-    - tank2
-- name: tank2
+    - honest
+- name: honest
   addnode:
     - miner
-    - tank1
+    - victim
 - name: transactor1
   addnode:
     - miner
