@@ -42,6 +42,12 @@ class MinerStd(Commander):
             help="When true, generate 101 blocks ONCE per miner",
         )
         parser.add_argument(
+            "--once",
+            dest="once",
+            action="store_true",
+            help="When true, generate 101 blocks ONCE per miner",
+        )
+        parser.add_argument(
             "--tank",
             dest="tank",
             type=str,
@@ -72,6 +78,8 @@ class MinerStd(Commander):
                 except Exception as e:
                     self.log.error(f"node {miner.node.index} error: {e}")
                 sleep(self.options.interval)
+            if self.options.once:
+                break
 
 
 def main():

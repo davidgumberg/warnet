@@ -32,4 +32,6 @@ defaultConfig: 'rpcauth=forkobserver:1418183465eecbd407010cf60811c6a0$d4e5f0647a
   debug=cmpctblock
 
   debug=net
+
+  logtimemicros=1
   '
